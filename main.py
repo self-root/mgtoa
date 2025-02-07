@@ -1,9 +1,16 @@
 import re
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
-from ship_dbaccess import vessel_in_database
+from ship_dbaccess import *
+from logger_conf import get_logger
+import time
 
-def parse_schedule_html(schedule_html) -> list[tuple[str,str]]:
+logger = get_logger(__name__)
+
+def parse_schedule_html(schedule_html, s_type: str) -> list[tuple[str,str,str]]:
+    """
+    s_type is either expected or arrival
+    """
     rows = schedule_html.find("tbody").find_all("tr")
     schedule = list()
     for element in rows:
@@ -13,15 +20,15 @@ def parse_schedule_html(schedule_html) -> list[tuple[str,str]]:
         vessel_detail_link = links["href"]
         temp = vessel_detail_link.split("/")
         imo_number = temp[3]
-        schedule.append((imo_number, expected_arrival))
+        schedule.append((imo_number, expected_arrival, s_type))
     return schedule
 
-def get_ships_arrivals(html_content) ->tuple[str,str]:
+def get_ships_arrivals(html_content) ->list[tuple[str,str,str]]:
     soup = BeautifulSoup(html_content, "html.parser")
     expected = soup.find(id="expected")
     arrivals = soup.find(id="arrivals")
-    schedule = parse_schedule_html(expected)
-    schedule.extend(parse_schedule_html(arrivals))
+    schedule = parse_schedule_html(expected, "expected")
+    schedule.extend(parse_schedule_html(arrivals, "arrival"))
     return schedule
 
 def parse_vessel_detail(vessel_detail_html) -> dict[str, str]:
@@ -48,34 +55,39 @@ def parse_vessel_detail(vessel_detail_html) -> dict[str, str]:
 if __name__ == "__main__":
     port_schedule_html = "Port of Toamasina (Madagascar) - Arrivals, Departures, Expected vessels - VesselFinder.html"
     ship_detail = "FENJA BULKER, Bulk Carrier - Details and current position - IMO 1035997 - VesselFinder.html"
-    #with open(port_schedule_html, "r") as html:
-    #    get_ships_arrivals(html)
-    #with open(ship_detail, "r") as detail:
-    #    parse_vessel_detail(detail)
     toamasina = "https://www.vesselfinder.com/ports/MGTOA001"
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.5735.199 Safari/537.36"
     port_of_toa_schedule_html = ""
-    """with sync_playwright() as pl:
+    with sync_playwright() as pl:
         browser = pl.chromium.launch()
         page = browser.new_page(user_agent=user_agent)
+        logger.debug(f"Fetching {toamasina=}")
         page.goto(toamasina)
         port_of_toa_schedule_html = page.content()
         browser.close()
-    ships = get_ships_arrivals(port_of_toa_schedule_html)"""
-    ships = list()
-    with open(port_schedule_html, "r") as html:
-        ships = get_ships_arrivals(html)
-    for imo, _ in ships:
-        #Check if vessel details already exist in database
-        #if not, 
-        if not vessel_in_database(imo):
-            vessel_detail_url = f"https://www.vesselfinder.com/vessels/details/{imo}"
+        logger.debug(f"Fetched {toamasina=}")
+    schedules = get_ships_arrivals(port_of_toa_schedule_html)
+
+    for schedule in schedules:
+        if len(schedule[0]) == 9: # No IMO number, only MMIS
+            continue
+        if not vessel_in_database(schedule[0]):
+            vessel_detail_url = f"https://www.vesselfinder.com/vessels/details/{schedule[0]}"
             with sync_playwright() as pl:
                 browser = pl.chromium.launch()
                 page = browser.new_page(user_agent=user_agent)
+                logger.debug(f"Fetching {vessel_detail_url=}")
                 page.goto(vessel_detail_url)
                 vessel_detail_html = page.content()
                 vessel_detail = parse_vessel_detail(vessel_detail_html)
+                add_vessel(vessel_detail)
+                logger.debug(f"Added vessel {schedule[0]=} to the database")
+                browser.close()
+            time.sleep(3)
+        ship = get_vessel(schedule[0])
+        if not ship_schedule_exists(schedule, ship.get_id()):
+            logger.debug(f"Adding {schedule=} into the database")
+            add_ship_schedule(schedule, ship.get_id())
         
     
 
